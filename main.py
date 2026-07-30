@@ -1,9 +1,10 @@
 import os
 import random
 import logging
-from contextlib import asynccontextmanager
+import asyncio  # ПРИНУДИТЕЛЬНО ИМПОРТИРОВАЛИ МОДУЛЬ (ОШИБКА ИСПРАВЛЕНА!)
 from typing import Optional, Dict
-from fastapi import FastAPI, HTTPException, status
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from aiogram import Bot, Dispatcher, types
@@ -15,8 +16,8 @@ logging.basicConfig(level=logging.INFO)
 # КОНФИГУРАЦИЯ И ТОКЕНЫ
 BOT_TOKEN = "8804973603:AAHqWkyFQv8qW2ZZUHn7RSqVddqVCN6_vXs"
 OWNER_ID = 6682822292
+RENDER_URL = "https://onrender.com"  # URL вашего бэкенда
 
-# Инициализация объектов Телеграм-бота
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -27,22 +28,19 @@ db: Dict[str, dict] = {
 }
 
 # --- НАСТРОЙКА ЖИЗНЕННОГО ЦИКЛА (LIFESPAN) ---
-# Эта функция заставляет Render одновременно и правильно держать в памяти и бота, и сервер!
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Логика при СТАРТЕ сервера: запускаем бота в асинхронном режиме внутри FastAPI
-    logging.info("Казино-движок: Запуск фонового поллинга Telegram-бота...")
-    asyncio_task = asyncio.create_task(dp.start_polling(bot))
+    # При старте сервера FastAPI автоматически регистрирует вебхук в Telegram
+    webhook_url = f"{RENDER_URL}/tg-webhook"
+    logging.info(f"Казино-движок: Установка вебхука на {webhook_url}")
+    await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
     yield
-    # Логика при ВЫКЛЮЧЕНИИ сервера: корректно закрываем сессию бота
-    logging.info("Казино-движок: Остановка Telegram-бота...")
-    await dp.stop_polling()
-    asyncio_task.cancel()
+    # При выключении сервера удаляем вебхук
+    logging.info("Казино-движок: Удаление вебхука Telegram...")
+    await bot.delete_webhook()
 
-# Инициализируем FastAPI с привязкой жизненного цикла бота
+# Инициализируем FastAPI с привязкой умного вебхука
 app = FastAPI(title="WOG Casino Python Engine", lifespan=lifespan)
-
-import asyncio # Нужен для асинхронных задач
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +49,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ПРИЕМ УВЕДОМЛЕНИЙ ОТ ТЕЛЕГРАМА (ВЕБХУК-ЭНДПОИНТ)
+@app.post("/tg-webhook")
+async def telegram_webhook(request: Request):
+    try:
+        update_data = await request.json()
+        update = types.Update(**update_data)
+        await dp.feed_update(bot, update)
+        return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Ошибка обработки вебхука: {e}")
+        return {"status": "error"}
 
 # --- СТРУКТУРЫ ДАННЫХ (МОДЕЛИ) ---
 class UserLogin(BaseModel):
@@ -185,7 +195,8 @@ async def play_dice(bet_data: DiceBet):
         "diceSum": dice_sum,
         "win": is_win,
         "balance": player["balance"]
-    }# --- СТРУКТУРЫ ДАННЫХ ДЛЯ ПРОМОКОДОВ ---
+    }
+# --- СТРУКТУРЫ ДАННЫХ ДЛЯ ПРОМОКОДОВ ---
 class PromoCreate(BaseModel):
     admin_id: int
     code: str
@@ -233,14 +244,9 @@ async def list_promos(data: dict):
     if data.get("admin_id") != OWNER_ID: raise HTTPException(status_code=403, detail="Access denied")
     return db["promos"]
 
-# --- КОРНЕВОЙ СТАТУС СЕРВЕРА ---
-@app.get("/")
-async def root_status():
-    return {"status": "WOG Casino Core Python FastAPI Engine Active", "users_online": len(db["users"])}
-
 
 # =====================================================================
-# --- ЛОГИКА TELEGRAM-БОТА (ИНТЕГРИРОВАНА ВО ВНУТРЕННИЙ ПОЛЛИНГ FASTAPI) ---
+# --- ЛОГИКА TELEGRAM-БОТА (ОБРАБОТКА ВНУТРИ ВЕБХУКА FASTAPI) ---
 # =====================================================================
 
 @dp.message(CommandStart())
@@ -260,4 +266,3 @@ async def cmd_start(message: types.Message):
     )
     
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=kb.as_markup())
-
