@@ -1,13 +1,49 @@
 import os
 import random
+import logging
+from contextlib import asynccontextmanager
 from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-app = FastAPI(title="WOG Casino Python Engine")
+logging.basicConfig(level=logging.INFO)
 
-# Полностью разрешаем CORS, чтобы ваш GitHub Pages мог отправлять запросы
+# КОНФИГУРАЦИЯ И ТОКЕНЫ
+BOT_TOKEN = "8804973603:AAHqWkyFQv8qW2ZZUHn7RSqVddqVCN6_vXs"
+OWNER_ID = 6682822292
+
+# Инициализация объектов Телеграм-бота
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# Глобальная база данных игроков и промокодов в оперативной памяти Python
+db: Dict[str, dict] = {
+    "users": {},
+    "promos": {}
+}
+
+# --- НАСТРОЙКА ЖИЗНЕННОГО ЦИКЛА (LIFESPAN) ---
+# Эта функция заставляет Render одновременно и правильно держать в памяти и бота, и сервер!
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Логика при СТАРТЕ сервера: запускаем бота в асинхронном режиме внутри FastAPI
+    logging.info("Казино-движок: Запуск фонового поллинга Telegram-бота...")
+    asyncio_task = asyncio.create_task(dp.start_polling(bot))
+    yield
+    # Логика при ВЫКЛЮЧЕНИИ сервера: корректно закрываем сессию бота
+    logging.info("Казино-движок: Остановка Telegram-бота...")
+    await dp.stop_polling()
+    asyncio_task.cancel()
+
+# Инициализируем FastAPI с привязкой жизненного цикла бота
+app = FastAPI(title="WOG Casino Python Engine", lifespan=lifespan)
+
+import asyncio # Нужен для асинхронных задач
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,14 +51,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Глобальная база данных игроков и промокодов в оперативной памяти сервера
-db: Dict[str, dict] = {
-    "users": {},
-    "promos": {}
-}
-
-OWNER_ID = 6682822292  # Ваш ID Администратора
 
 # --- СТРУКТУРЫ ДАННЫХ (МОДЕЛИ) ---
 class UserLogin(BaseModel):
@@ -35,8 +63,7 @@ class UserLogin(BaseModel):
 class BalanceUpdate(BaseModel):
     id: int
     amount: int
-
-# --- АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ ИГРОКА ---
+# --- АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ ИГРОКА НА СЕРВЕРЕ ---
 @app.post("/api/user")
 async def login_user(user_data: UserLogin):
     user_id = user_data.id
@@ -65,7 +92,7 @@ async def login_user(user_data: UserLogin):
 
     return db["users"][user_id]
 
-# --- НАЧИСЛЕНИЕ И СМЕНА БАЛАНСА ---
+# --- ИЗМЕНЕНИЕ И НАЧИСЛЕНИЕ ИГРОВОГО БАЛАНСА ---
 @app.post("/api/balance")
 async def update_balance(data: BalanceUpdate):
     search_id = data.id if data.id else OWNER_ID
@@ -85,23 +112,13 @@ async def update_balance(data: BalanceUpdate):
         db["users"][search_id]["balance"] = 0
 
     return {"success": True, "balance": db["users"][search_id]["balance"]}
-# --- МОДЕЛИ ДАННЫХ ДЛЯ ИГР И ПРОМОКОДОВ ---
+
+# --- СТРУКТУРЫ ДАННЫХ И КОЭФФИЦИЕНТЫ ДЛЯ КОСТЕЙ ---
 class DiceBet(BaseModel):
     id: int
     bet: int
     target: str
 
-class PromoCreate(BaseModel):
-    admin_id: int
-    code: str
-    reward: int
-    uses: int
-
-class PromoActivate(BaseModel):
-    id: int
-    code: str
-
-# МАТРИЦА КОЭФФИЦИЕНТОВ СТОЛА КОСТЕЙ ИЗ СКРИНШОТОВ
 MULTIPLIERS = {
     "under": 2.4, "seven": 5.9, "over": 2.4, "even": 2.0, "odd": 2.0,
     "c1": 3.2, "c2": 3.2, "c3": 3.2, "c4": 3.2, "c5": 3.2, "c6": 3.2,
@@ -110,7 +127,7 @@ MULTIPLIERS = {
     "p1": 35.3, "p2": 35.3, "p3": 35.3, "p4": 35.3, "p5": 35.3, "p6": 35.3, "anypair": 5.9
 }
 
-# --- МАТЕМАТИЧЕСКИЙ ДВИЖОК СТАВОК В КОСТИ ---
+# --- ДВИЖОК СТАВОК В КОСТИ ---
 @app.post("/api/game/dice")
 async def play_dice(bet_data: DiceBet):
     user_id = bet_data.id
@@ -127,7 +144,6 @@ async def play_dice(bet_data: DiceBet):
     if target not in MULTIPLIERS:
         raise HTTPException(status_code=400, detail="Неверный тип ставки")
 
-    # Сервер честно и защищенно бросает две кости
     val1 = random.randint(1, 6)
     val2 = random.randint(1, 6)
     dice_sum = val1 + val2
@@ -135,7 +151,6 @@ async def play_dice(bet_data: DiceBet):
     
     is_win = False
 
-    # Проверка условий победы по матрице
     if target == "under" and dice_sum < 7: is_win = True
     elif target == "seven" and dice_sum == 7: is_win = True
     elif target == "over" and dice_sum > 7: is_win = True
@@ -156,7 +171,6 @@ async def play_dice(bet_data: DiceBet):
     elif target == "p5" and is_pair and val1 == 5: is_win = True
     elif target == "p6" and is_pair and val1 == 6: is_win = True
 
-    # Начисление или списание монет
     if is_win:
         win_amount = int(bet * MULTIPLIERS[target])
         profit = win_amount - bet
@@ -171,9 +185,18 @@ async def play_dice(bet_data: DiceBet):
         "diceSum": dice_sum,
         "win": is_win,
         "balance": player["balance"]
-    }
+    }# --- СТРУКТУРЫ ДАННЫХ ДЛЯ ПРОМОКОДОВ ---
+class PromoCreate(BaseModel):
+    admin_id: int
+    code: str
+    reward: int
+    uses: int
 
-# --- УПРАВЛЕНИЕ ПРОМОКОДАМИ ---
+class PromoActivate(BaseModel):
+    id: int
+    code: str
+
+# --- ЭНДПОИНТЫ ПРОМОКОДОВ ---
 @app.post("/api/promo/create")
 async def create_promo(data: PromoCreate):
     if data.admin_id != OWNER_ID:
@@ -210,6 +233,31 @@ async def list_promos(data: dict):
     if data.get("admin_id") != OWNER_ID: raise HTTPException(status_code=403, detail="Access denied")
     return db["promos"]
 
+# --- КОРНЕВОЙ СТАТУС СЕРВЕРА ---
 @app.get("/")
-async def root():
-    return {"status": "WOG Casino Core Python Active", "users_online": len(db["users"])}
+async def root_status():
+    return {"status": "WOG Casino Core Python FastAPI Engine Active", "users_online": len(db["users"])}
+
+
+# =====================================================================
+# --- ЛОГИКА TELEGRAM-БОТА (ИНТЕГРИРОВАНА ВО ВНУТРЕННИЙ ПОЛЛИНГ FASTAPI) ---
+# =====================================================================
+
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message):
+    # Создаем красивую кнопку запуска приложения Mini App прямо в чате
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="🎰 Играть в WOG Casino",
+        web_app=types.WebAppInfo(url="https://github.io")
+    )
+    
+    welcome_text = (
+        f"🌟 **Добро пожаловать в WOG Casino**, {message.from_user.first_name}!\n\n"
+        f"У нас вы можете играть в премиальные игры на виртуальные монеты **W-Coins**.\n"
+        f"Ваш стартовый баланс в размере 5000 W уже зачислен в кошелёк.\n\n"
+        f"Нажмите на кнопку ниже, чтобы открыть игровой хаб! 👇"
+    )
+    
+    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=kb.as_markup())
+
