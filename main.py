@@ -1,30 +1,30 @@
 import os
 import random
-from typing import Optional
+from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="WOG Casino Core Engine")
+app = FastAPI(title="WOG Casino Python Engine")
 
-# НАСТРОЙКА CORS ДЛЯ БЕЗОПАСНОГО КОННЕКТА С GITHUB PAGES
+# Полностью разрешаем CORS, чтобы ваш GitHub Pages мог отправлять запросы
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Разрешаем запросы со всех фронтендов
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Глобальная база данных игроков и промокодов в оперативной памяти Python
-db = {
+# Глобальная база данных игроков и промокодов в оперативной памяти сервера
+db: Dict[str, dict] = {
     "users": {},
     "promos": {}
 }
 
 OWNER_ID = 6682822292  # Ваш ID Администратора
 
-# --- МОДЕЛИ ДАННЫХ ДЛЯ ЗАПРОСОВ (PYDANTIC) ---
+# --- СТРУКТУРЫ ДАННЫХ (МОДЕЛИ) ---
 class UserLogin(BaseModel):
     id: int
     first_name: Optional[str] = "Игрок"
@@ -36,12 +36,11 @@ class BalanceUpdate(BaseModel):
     id: int
     amount: int
 
-# --- ЭНДПОИНТ 1: АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ ИГРОКА ---
+# --- АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ ИГРОКА ---
 @app.post("/api/user")
 async def login_user(user_data: UserLogin):
     user_id = user_data.id
     
-    # Принудительная авторизация создателя, если Telegram заблокировал данные
     if not user_id or user_id == OWNER_ID:
         user_id = OWNER_ID
         user_data.first_name = "Основатель (WOG)"
@@ -49,7 +48,6 @@ async def login_user(user_data: UserLogin):
 
     assigned_role = "admin" if user_id == OWNER_ID else "user"
 
-    # Если игрока нет в оперативной памяти — регистрируем с начальным балансом 5000 W
     if user_id not in db["users"]:
         db["users"][user_id] = {
             "id": user_id,
@@ -60,7 +58,6 @@ async def login_user(user_data: UserLogin):
             "role": assigned_role
         }
     else:
-        # Если игрок уже есть, просто обновляем его данные из Telegram сессии
         db["users"][user_id]["name"] = user_data.first_name or db["users"][user_id]["name"]
         db["users"][user_id]["username"] = user_data.username or db["users"][user_id]["username"]
         db["users"][user_id]["photo_url"] = user_data.photo_url or db["users"][user_id]["photo_url"]
@@ -68,7 +65,7 @@ async def login_user(user_data: UserLogin):
 
     return db["users"][user_id]
 
-# --- ЭНДПОИНТ 2: СЛУЖЕБНОЕ ИЗМЕНЕНИЕ БАЛАНСА И АДМИНКА ---
+# --- НАЧИСЛЕНИЕ И СМЕНА БАЛАНСА ---
 @app.post("/api/balance")
 async def update_balance(data: BalanceUpdate):
     search_id = data.id if data.id else OWNER_ID
@@ -76,7 +73,7 @@ async def update_balance(data: BalanceUpdate):
     if search_id not in db["users"]:
         db["users"][search_id] = {
             "id": search_id,
-            "name": "Основатель (WOG)" if search_id == OWNER_ID else "Игрок казино",
+            "name": "Основатель (WOG)" if search_id == OWNER_ID else "Игрок",
             "username": "",
             "photo_url": "",
             "balance": 5000,
@@ -92,7 +89,7 @@ async def update_balance(data: BalanceUpdate):
 class DiceBet(BaseModel):
     id: int
     bet: int
-    target: str  # На какой исход поставлено (under, seven, over, even, odd, c1-c6, sum2-sum12, p1-p6, anypair)
+    target: str
 
 class PromoCreate(BaseModel):
     admin_id: int
@@ -104,7 +101,7 @@ class PromoActivate(BaseModel):
     id: int
     code: str
 
-# МАТРИЦА КОЭФФИЦИЕНТОВ КАЗИНО WOG НА PYTHON
+# МАТРИЦА КОЭФФИЦИЕНТОВ СТОЛА КОСТЕЙ ИЗ СКРИНШОТОВ
 MULTIPLIERS = {
     "under": 2.4, "seven": 5.9, "over": 2.4, "even": 2.0, "odd": 2.0,
     "c1": 3.2, "c2": 3.2, "c3": 3.2, "c4": 3.2, "c5": 3.2, "c6": 3.2,
@@ -113,7 +110,7 @@ MULTIPLIERS = {
     "p1": 35.3, "p2": 35.3, "p3": 35.3, "p4": 35.3, "p5": 35.3, "p6": 35.3, "anypair": 5.9
 }
 
-# --- ЭНДПОИНТ 3: СЕРВЕРНЫЙ ДВИЖОК СТАВОК В КОСТИ ---
+# --- МАТЕМАТИЧЕСКИЙ ДВИЖОК СТАВОК В КОСТИ ---
 @app.post("/api/game/dice")
 async def play_dice(bet_data: DiceBet):
     user_id = bet_data.id
@@ -130,7 +127,7 @@ async def play_dice(bet_data: DiceBet):
     if target not in MULTIPLIERS:
         raise HTTPException(status_code=400, detail="Неверный тип ставки")
 
-    # Сервер честно генерирует бросок двух кубиков (от 1 до 6)
+    # Сервер честно и защищенно бросает две кости
     val1 = random.randint(1, 6)
     val2 = random.randint(1, 6)
     dice_sum = val1 + val2
@@ -138,7 +135,7 @@ async def play_dice(bet_data: DiceBet):
     
     is_win = False
 
-    # Логика проверки условий победы
+    # Проверка условий победы по матрице
     if target == "under" and dice_sum < 7: is_win = True
     elif target == "seven" and dice_sum == 7: is_win = True
     elif target == "over" and dice_sum > 7: is_win = True
@@ -159,13 +156,12 @@ async def play_dice(bet_data: DiceBet):
     elif target == "p5" and is_pair and val1 == 5: is_win = True
     elif target == "p6" and is_pair and val1 == 6: is_win = True
 
-    # Корректировка баланса игрока
+    # Начисление или списание монет
     if is_win:
         win_amount = int(bet * MULTIPLIERS[target])
         profit = win_amount - bet
         player["balance"] += profit
     else:
-        profit = -bet
         player["balance"] -= bet
 
     return {
@@ -174,17 +170,16 @@ async def play_dice(bet_data: DiceBet):
         "val2": val2,
         "diceSum": dice_sum,
         "win": is_win,
-        "winAmount": win_amount if is_win else 0,
         "balance": player["balance"]
     }
 
-# --- ЭНДПОИНТ 4: СОЗДАНИЕ ПРОМОКОДА (АДМИН) ---
+# --- УПРАВЛЕНИЕ ПРОМОКОДАМИ ---
 @app.post("/api/promo/create")
 async def create_promo(data: PromoCreate):
     if data.admin_id != OWNER_ID:
         raise HTTPException(status_code=403, detail="Access denied")
         
-    clean_code = data.code.strip().toUpperCase()
+    clean_code = data.code.strip().upper()
     db["promos"][clean_code] = {
         "reward": data.reward,
         "uses": data.uses,
@@ -192,13 +187,12 @@ async def create_promo(data: PromoCreate):
     }
     return {"success": True}
 
-# --- ЭНДПОИНТ 5: АКТИВАЦИЯ ПРОМОКОДА ---
 @app.post("/api/promo/activate")
 async def activate_promo(data: PromoActivate):
     user_id = data.id
-    clean_code = data.code.strip().toUpperCase()
+    clean_code = data.code.strip().upper()
 
-    if user_id not in db["users"]: raise HTTPException(status_code=404, detail="User not found")
+    if user_id not in db["users"]: raise HTTPException(status_code=440, detail="User not found")
     if clean_code not in db["promos"]: raise HTTPException(status_code=440, detail="Promo not found")
     
     promo = db["promos"][clean_code]
@@ -211,7 +205,6 @@ async def activate_promo(data: PromoActivate):
 
     return {"success": True, "balance": db["users"][user_id]["balance"], "message": f"Активирован код на +{promo['reward']} W!"}
 
-# --- ЭНДПОИНТ 6: СПИСОК ПРОМОКОДОВ ---
 @app.post("/api/promo/list")
 async def list_promos(data: dict):
     if data.get("admin_id") != OWNER_ID: raise HTTPException(status_code=403, detail="Access denied")
@@ -219,4 +212,4 @@ async def list_promos(data: dict):
 
 @app.get("/")
 async def root():
-    return {"status": "WOG Casino Core Python FastAPI Engine Active", "users_count": len(db["users"])}
+    return {"status": "WOG Casino Core Python Active", "users_online": len(db["users"])}
