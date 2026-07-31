@@ -8,14 +8,15 @@ from pydantic import BaseModel
 
 app = FastAPI(title="WOG Casino Backend")
 
-# НАСТРОЙКА CORS ДЛЯ СВЯЗИ С TELEGRAM MINI APP
+# НАСТРОЙКА КОРРЕКТНОЙ CORS-ПОЛИТИКИ СЕРВЕРА FASTAPI
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"],  # Полный доступ для любых WebApp-клиентов Telegram
+    allow_credentials=False,  # СВЕРХВАЖНО: Меняем на False, чтобы убрать конфликт со звездочкой!
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 DB_FILE = "casino.db"
 
