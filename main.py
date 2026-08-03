@@ -141,3 +141,52 @@ async def process_payout(data: PayoutSchema):
 @app.get("/status")
 async def server_status():
     return {"status": "online", "engine": "FastAPI", "language": "Python"}
+import requests
+from fastapi import FastAPI, Request
+
+app = FastAPI()
+
+TELEGRAM_BOT_TOKEN = "8804973603:AAHqWkyFQv8qW2ZZUHn7RSqVddqVCN6_vXs"  # Замени на токен от @BotFather
+TELEGRAM_CHAT_ID = "-1004438070296"     # Замени на ID твоего чата/группы, куда слать отчеты
+
+@app.post("/github-webhook")
+async def github_webhook(request: Request):
+    try:
+        payload = await request.json()
+        
+        # Проверяем, что это событие "push" (обновление кода)
+        if "commits" in payload:
+            repo_name = payload["repository"]["name"]          # Имя репозитория
+            branch = payload["ref"].split("/")[-1]             # Ветку (например, main)
+            pusher = payload["pusher"]["name"]                 # Кто запушил
+            
+            # Собираем список коммитов
+            commit_messages = []
+            for commit in payload["commits"]:
+                author = commit["author"]["name"]
+                message = commit["message"]
+                commit_messages.append(f"• 👤 {author}: {message}")
+            
+            commits_text = "\n".join(commit_messages)
+            
+            # Формируем сочное сообщение на русском языке
+            tg_message = (
+                f"🚀 *Новое обновление в репозитории!*\n\n"
+                f"📁 *Репозиторий:* `{repo_name}`\n"
+                f"🌿 *Ветка:* `{branch}`\n"
+                f"🧑‍💻 *Автор пуша:* {pusher}\n\n"
+                f"📝 *Список изменений:*\n{commits_text}"
+            )
+            
+            # Отправляем в Telegram
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": tg_message,
+                "parse_mode": "Markdown"
+            }
+            requests.post(url, json=data)
+            
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
