@@ -7,26 +7,24 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import WheelPlusBetPayload, WheelPlusFairRevealPayload, WheelPlusRoomPayload
-from app.db.models import AdminAuditLog, GameRound, User, Wallet, WheelPlusBet, WheelPlusRoom, WheelPlusRound
+from app.db.models import User, Wallet, WheelPlusBet, WheelPlusRoom, WheelPlusRound
 from app.services.stats_service import StatsService
 from app.services.wallet_service import WalletService
 
 WHEEL_PLUS_ROOM_KEY = "wheel_plus_room"
 WHEEL_PLUS_BETTING_SECONDS = 25
-WHEEL_PLUS_REVEAL_SECONDS = 12
 WHEEL_PLUS_TOP_HISTORY = 12
 
 WHEEL_PLUS_SEQUENCE = [
-    "2", "8", "12", "15", "18", "24", "30", "36", "5", "7", "11", "14",
-    "17", "20", "23", "26", "29", "32", "1", "3", "4", "6", "9", "10",
-    "13", "16", "19", "21", "22", "25", "27", "28", "31", "33", "34", "35", "0",
+    "0", "26", "16", "33", "11", "30", "8", "23", "5", "17", "1", "36",
+    "14", "28", "3", "21", "6", "25", "10", "34", "12", "19", "24", "7",
+    "29", "18", "32", "9", "22", "15", "35", "4", "27", "13", "31", "2",
 ]
 
-LUCKY_MULTIPLIERS = {"2": 50, "8": 100, "12": 300}
+LUCKY_MULTIPLIERS = [50, 100, 300]
 
 
 def _now() -> datetime:
@@ -35,6 +33,42 @@ def _now() -> datetime:
 
 def _hash_seed(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _build_lucky_numbers(server_seed_hash: str, round_index: int) -> list[dict[str, Any]]:
+    digest = hashlib.sha256(f"{server_seed_hash}:{round_index}:lucky".encode("utf-8")).hexdigest()
+    available = [num for num in WHEEL_PLUS_SEQUENCE if num != "0"]
+    lucky_numbers: list[dict[str, Any]] = []
+    used: set[str] = set()
+    cursor = 0
+    while len(lucky_numbers) < 3 and cursor < len(digest):
+        segment = digest[cursor : cursor + 4] or digest[cursor:]
+        cursor += 4
+        if not segment:
+            break
+        idx = int(segment, 16) % len(available)
+        number = available[idx]
+        if number in used:
+            continue
+        used.add(number)
+        lucky_numbers.append({"number": number, "multiplier": LUCKY_MULTIPLIERS[len(lucky_numbers)]})
+    if len(lucky_numbers) < 3:
+        for number in available:
+            if number in used:
+                continue
+            used.add(number)
+            lucky_numbers.append({"number": number, "multiplier": LUCKY_MULTIPLIERS[len(lucky_numbers)]})
+            if len(lucky_numbers) >= 3:
+                break
+    return lucky_numbers
+
+
+def _result_color(number: str, lucky_numbers: list[dict[str, Any]]) -> str:
+    if number == "0":
+        return "green"
+    if any(item["number"] == number for item in lucky_numbers):
+        return "gold"
+    return "blue"
 
 
 def _ensure_room(session: Session) -> WheelPlusRoom:
@@ -54,6 +88,7 @@ def _serialize_round(session: Session, round_row: WheelPlusRound) -> dict[str, A
         .order_by(desc(WheelPlusBet.amount), desc(WheelPlusBet.created_at))
     ).all()
 
+    lucky_numbers = json.loads(round_row.lucky_numbers_json or "[]")
     betting_users: list[dict[str, Any]] = []
     seen_user_ids: set[int] = set()
     for bet, user in bets:
@@ -67,7 +102,7 @@ def _serialize_round(session: Session, round_row: WheelPlusRound) -> dict[str, A
                 "username": user.username or user.first_name or "noname",
                 "status": user.status,
                 "balance": wallet.balance if wallet else 0,
-                "total_bet": int(sum(item.amount for item, linked_user in bets if linked_user.id == user.id)),
+                "total_bet": sum(item.amount for item, linked_user in bets if linked_user.id == user.id),
             }
         )
 
@@ -96,7 +131,7 @@ def _serialize_round(session: Session, round_row: WheelPlusRound) -> dict[str, A
         "nonce": round_row.nonce,
         "result_number": round_row.result_number,
         "result_color": round_row.result_color,
-        "lucky_numbers": json.loads(round_row.lucky_numbers_json or "[]"),
+        "lucky_numbers": lucky_numbers,
         "total_bet": round_row.total_bet,
         "total_payout": round_row.total_payout,
         "bets": bets_payload,
@@ -115,25 +150,27 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
     digest = hashlib.sha256(seed_material.encode("utf-8")).hexdigest()
     sequence_index = int(digest[:8], 16) % len(WHEEL_PLUS_SEQUENCE)
     result_number = WHEEL_PLUS_SEQUENCE[sequence_index]
-    result_color = "green" if result_number in {"0"} else ("red" if result_number in {"2", "8", "12", "18", "24", "30", "36", "5", "7", "11", "14", "15", "20", "23", "26", "29", "32"} else "black")
 
-    lucky_numbers = [
-        {
-            "number": num,
-            "multiplier": LUCKY_MULTIPLIERS[num],
-        }
-        for num in WHEEL_PLUS_SEQUENCE[:3]
-    ]
+    lucky_numbers = json.loads(round_row.lucky_numbers_json or "[]")
+    result_color = _result_color(result_number, lucky_numbers)
 
     bets = session.execute(select(WheelPlusBet).where(WheelPlusBet.round_id == round_row.id)).scalars().all()
     total_payout = 0
+    total_bet = 0
+    lucky_map = {item["number"]: int(item["multiplier"]) for item in lucky_numbers}
 
-    result_multiplier = LUCKY_MULTIPLIERS.get(result_number, 0)
     for bet in bets:
-        payout = bet.amount * result_multiplier if bet.cell_key == result_number and result_multiplier > 0 else 0
+        total_bet += bet.amount
+        if bet.cell_key == result_number:
+            multiplier = lucky_map.get(result_number, 35)
+            payout = bet.amount * multiplier
+        else:
+            multiplier = 0
+            payout = 0
+
         if payout > 0:
             WalletService.payout(session, bet.user_id, payout, meta={"game": "wheel_plus", "round_id": round_row.id, "result": result_number})
-            StatsService.update_after_round(session, bet.user_id, bet=bet.amount, payout=payout, multiplier=result_multiplier)
+            StatsService.update_after_round(session, bet.user_id, bet=bet.amount, payout=payout, multiplier=multiplier)
             total_payout += payout
         else:
             StatsService.update_after_round(session, bet.user_id, bet=bet.amount, payout=0, multiplier=0)
@@ -145,9 +182,8 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
     round_row.client_seed = client_seed
     round_row.result_number = result_number
     round_row.result_color = result_color
-    round_row.total_bet = sum(bet.amount for bet in bets)
+    round_row.total_bet = total_bet
     round_row.total_payout = total_payout
-    round_row.lucky_numbers_json = json.dumps(lucky_numbers, ensure_ascii=False)
 
     room.status = "betting"
     room.round_index = round_row.round_index + 1
@@ -162,19 +198,22 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
 
 
 def _start_new_round(session: Session, room: WheelPlusRoom) -> WheelPlusRound:
+    server_seed = secrets.token_hex(16)
+    server_seed_hash = _hash_seed(server_seed)
+    lucky_numbers = _build_lucky_numbers(server_seed_hash, room.round_index)
     round_row = WheelPlusRound(
         room_id=room.id,
         round_index=room.round_index,
         status="betting",
         betting_started_at=_now(),
         betting_ends_at=_now() + timedelta(seconds=WHEEL_PLUS_BETTING_SECONDS),
-        server_seed_hash=_hash_seed(secrets.token_hex(16)),
+        server_seed_hash=server_seed_hash,
         server_seed="",
         client_seed="wheel-plus-room",
         nonce=0,
         result_number="",
         result_color="",
-        lucky_numbers_json=json.dumps([], ensure_ascii=False),
+        lucky_numbers_json=json.dumps(lucky_numbers, ensure_ascii=False),
         total_bet=0,
         total_payout=0,
     )
@@ -257,6 +296,9 @@ def get_room_snapshot(session: Session) -> dict[str, Any]:
 
 
 def place_bet(session: Session, user: User, cell_key: str, amount: int) -> dict[str, Any]:
+    if cell_key not in set(WHEEL_PLUS_SEQUENCE):
+        raise HTTPException(status_code=400, detail="Invalid cell key")
+
     room = _ensure_room(session)
     round_row = _get_current_round(session, room)
     if round_row.status != "betting":
@@ -274,13 +316,7 @@ def place_bet(session: Session, user: User, cell_key: str, amount: int) -> dict[
         )
     )
     if existing_bet is None:
-        existing_bet = WheelPlusBet(
-            room_id=room.id,
-            round_id=round_row.id,
-            user_id=user.id,
-            cell_key=cell_key,
-            amount=0,
-        )
+        existing_bet = WheelPlusBet(room_id=room.id, round_id=round_row.id, user_id=user.id, cell_key=cell_key, amount=0)
         session.add(existing_bet)
     existing_bet.amount += amount
     round_row.total_bet += amount
@@ -294,9 +330,9 @@ def reveal_round(session: Session, round_id: int) -> dict[str, Any]:
     round_row = session.scalar(select(WheelPlusRound).where(WheelPlusRound.id == round_id))
     if round_row is None:
         raise HTTPException(status_code=404, detail="Round not found")
-    if round_row.status != "settled" and round_row.betting_ends_at > _now():
-        raise HTTPException(status_code=409, detail="Round is not settled yet")
     if round_row.status != "settled":
+        if round_row.betting_ends_at > _now():
+            raise HTTPException(status_code=409, detail="Round is not settled yet")
         room = session.scalar(select(WheelPlusRoom).where(WheelPlusRoom.id == round_row.room_id))
         if room is None:
             raise HTTPException(status_code=404, detail="Room not found")
