@@ -21,9 +21,10 @@ from app.api.schemas import (
     PayoutPayload,
     WheelClassicSpinPayload,
 )
+from app.api.wheel_plus import router as wheel_plus_router
 from app.core.config import settings
 from app.db.base import Base
-from app.db.models import AdminAuditLog, GameRound, PlayerStats, Transaction, User, Wallet
+from app.db.models import AdminAuditLog, GameRound, PlayerStats, User, Wallet
 from app.db.session import engine, get_db
 from app.services.stats_service import StatsService
 from app.services.telegram_auth import verify_telegram_init_data
@@ -40,6 +41,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(wheel_plus_router)
 
 AMERICAN_WHEEL_SEQUENCE = [
     "0", "28", "9", "26", "30", "11", "7", "20", "32", "17", "5", "22",
@@ -52,16 +54,16 @@ RED_NUMBERS = {"1", "3", "5", "7", "9", "12", "14", "16", "18", "19", "21", "23"
 BLACK_NUMBERS = {"2", "4", "6", "8", "10", "11", "13", "15", "17", "20", "22", "24", "26", "28", "29", "31", "33", "35"}
 
 ADMIN_PANEL_HTML = """<!DOCTYPE html>
-<html lang="ru">
+<html lang=\"ru\">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0e17" />
+  <meta charset=\"UTF-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, viewport-fit=cover\" />
+  <meta name=\"theme-color\" content=\"#0b0e17\" />
   <title>WOG Admin</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src=\"https://telegram.org/js/telegram-web-app.js\"></script>
   <style>
     :root{--bg:#0b0e17;--card:#151923;--inner:#1c2130;--border:#222938;--blue:#2f6bf2;--gold:#ffca28;--green:#05c46b;--red:#ff3838;--text:#fff;--muted:#64748b;--shadow:0 10px 35px rgba(0,0,0,.35);--r:16px}
-    *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+    *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif}
     body{background:var(--bg);color:var(--text);padding:16px;min-height:100vh;display:flex;justify-content:center}
     .app{width:100%;max-width:980px;display:flex;flex-direction:column;gap:14px}
     .topbar,.card,.grid-card,.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow)}
@@ -70,7 +72,6 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     .btn{border:none;border-radius:12px;padding:11px 14px;font-weight:900;cursor:pointer;color:var(--text);background:var(--blue)}
     .btn.secondary{background:#171a26;border:1px solid var(--border)}
     .btn.danger{background:var(--red)}
-    .btn.ok{background:var(--green);color:#04110a}
     .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
     .grid-card{padding:14px;display:flex;flex-direction:column;gap:6px;min-height:92px}
     .grid-card .label{font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.6px}
@@ -80,8 +81,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     .panel h3{font-size:15px;margin-bottom:2px}
     .panel p,.muted{color:var(--muted);font-size:12px;line-height:1.45}
     .form-row{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-    input,select,textarea{width:100%;background:var(--inner);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:11px 12px;font-size:14px;outline:none}
-    textarea{min-height:88px;resize:vertical}
+    input,select{width:100%;background:var(--inner);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:11px 12px;font-size:14px;outline:none}
     .table-wrap{overflow:auto;border-radius:12px;border:1px solid var(--border)}
     table{width:100%;border-collapse:collapse;min-width:760px;background:#101523}
     th,td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:left;font-size:12px;vertical-align:top}
@@ -93,106 +93,80 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     .tag.user{background:rgba(47,107,242,.12);color:#9dc0ff}
     .tag.admin{background:rgba(255,202,40,.12);color:var(--gold)}
     .actions{display:flex;gap:8px;flex-wrap:wrap}
-    .split{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-    @media (max-width: 900px){.grid,.layout,.split,.form-row{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}}
-    @media (max-width: 640px){.grid,.layout,.split,.form-row{grid-template-columns:1fr}.topbar{align-items:flex-start}}
+    @media (max-width: 900px){.grid,.layout,.form-row{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}}
+    @media (max-width: 640px){.grid,.layout,.form-row{grid-template-columns:1fr}.topbar{align-items:flex-start}}
   </style>
 </head>
 <body>
-  <div class="app">
-    <div class="topbar">
+  <div class=\"app\">
+    <div class=\"topbar\">
       <div>
-        <div style="font-size:18px;font-weight:900">WOG Admin Panel</div>
-        <div class="muted" id="admin-subtitle">Подключение к backend...</div>
+        <div style=\"font-size:18px;font-weight:900\">WOG Admin Panel</div>
+        <div class=\"muted\" id=\"admin-subtitle\">Подключение к backend...</div>
       </div>
-      <div class="actions">
-        <span class="pill" id="admin-status">loading</span>
-        <button class="btn secondary" id="refresh-btn" type="button">Обновить</button>
-        <button class="btn" id="sync-btn" type="button">Синхронизировать</button>
+      <div class=\"actions\">
+        <span class=\"pill\" id=\"admin-status\">loading</span>
+        <button class=\"btn secondary\" id=\"refresh-btn\" type=\"button\">Обновить</button>
+        <button class=\"btn\" id=\"sync-btn\" type=\"button\">Синхронизировать</button>
       </div>
     </div>
 
-    <div class="grid">
-      <div class="grid-card"><div class="label">Пользователи</div><div class="value" id="metric-users">0</div><div class="muted">Всего аккаунтов</div></div>
-      <div class="grid-card"><div class="label">Активные</div><div class="value" id="metric-active">0</div><div class="muted">Статус active</div></div>
-      <div class="grid-card"><div class="label">Игры</div><div class="value" id="metric-rounds">0</div><div class="muted">Всего раундов</div></div>
-      <div class="grid-card"><div class="label">Баланс в системе</div><div class="value" id="metric-balance">0</div><div class="muted">Сумма WC по кошелькам</div></div>
+    <div class=\"grid\">
+      <div class=\"grid-card\"><div class=\"label\">Пользователи</div><div class=\"value\" id=\"metric-users\">0</div><div class=\"muted\">Всего аккаунтов</div></div>
+      <div class=\"grid-card\"><div class=\"label\">Активные</div><div class=\"value\" id=\"metric-active\">0</div><div class=\"muted\">Статус active</div></div>
+      <div class=\"grid-card\"><div class=\"label\">Игры</div><div class=\"value\" id=\"metric-rounds\">0</div><div class=\"muted\">Всего раундов</div></div>
+      <div class=\"grid-card\"><div class=\"label\">Баланс в системе</div><div class=\"value\" id=\"metric-balance\">0</div><div class=\"muted\">Сумма WC по кошелькам</div></div>
     </div>
 
-    <div class="layout">
-      <div class="panel">
-        <div class="actions" style="justify-content:space-between;align-items:center">
+    <div class=\"layout\">
+      <div class=\"panel\">
+        <div class=\"actions\" style=\"justify-content:space-between;align-items:center\">
           <div>
             <h3>Игроки</h3>
             <p>Баланс, статус и роль. Действия работают только для администраторов из `ADMIN_TELEGRAM_IDS`.</p>
           </div>
-          <input id="user-search" type="text" placeholder="Поиск по имени или Telegram ID" style="max-width:280px" />
+          <input id=\"user-search\" type=\"text\" placeholder=\"Поиск по имени или Telegram ID\" style=\"max-width:280px\" />
         </div>
-        <div class="table-wrap">
+        <div class=\"table-wrap\">
           <table>
             <thead>
-              <tr>
-                <th>Telegram</th>
-                <th>Профиль</th>
-                <th>Баланс</th>
-                <th>Статус</th>
-                <th>Роль</th>
-                <th>Действия</th>
-              </tr>
+              <tr><th>Telegram</th><th>Профиль</th><th>Баланс</th><th>Статус</th><th>Роль</th><th>Действия</th></tr>
             </thead>
-            <tbody id="users-body"></tbody>
+            <tbody id=\"users-body\"></tbody>
           </table>
         </div>
       </div>
 
-      <div class="panel">
+      <div class=\"panel\">
         <div>
           <h3>Быстрые действия</h3>
           <p>Начисление, списание, смена статуса и роли.</p>
         </div>
-        <div class="form-row">
-          <input id="action-telegram-id" type="number" min="1" placeholder="Telegram ID" />
-          <select id="action-type">
-            <option value="grant_balance">Начислить WC</option>
-            <option value="withdraw_balance">Списать WC</option>
-            <option value="set_status">Изменить статус</option>
-            <option value="set_role">Изменить роль</option>
+        <div class=\"form-row\">
+          <input id=\"action-telegram-id\" type=\"number\" min=\"1\" placeholder=\"Telegram ID\" />
+          <select id=\"action-type\">
+            <option value=\"grant_balance\">Начислить WC</option>
+            <option value=\"withdraw_balance\">Списать WC</option>
+            <option value=\"set_status\">Изменить статус</option>
+            <option value=\"set_role\">Изменить роль</option>
           </select>
         </div>
-        <div class="form-row">
-          <input id="action-amount" type="number" min="0" placeholder="Сумма WC" value="0" />
-          <select id="action-status">
-            <option value="active">active</option>
-            <option value="blocked">blocked</option>
-          </select>
+        <div class=\"form-row\">
+          <input id=\"action-amount\" type=\"number\" min=\"0\" placeholder=\"Сумма WC\" value=\"0\" />
+          <select id=\"action-status\"><option value=\"active\">active</option><option value=\"blocked\">blocked</option></select>
         </div>
-        <div class="form-row">
-          <select id="action-role">
-            <option value="user">user</option>
-            <option value="moderator">moderator</option>
-            <option value="admin">admin</option>
-            <option value="owner">owner</option>
-          </select>
-          <input id="action-note" type="text" placeholder="Комментарий" />
+        <div class=\"form-row\">
+          <select id=\"action-role\"><option value=\"user\">user</option><option value=\"moderator\">moderator</option><option value=\"admin\">admin</option><option value=\"owner\">owner</option></select>
+          <input id=\"action-note\" type=\"text\" placeholder=\"Комментарий\" />
         </div>
-        <button class="btn" id="apply-action-btn" type="button">Выполнить</button>
-        <div class="panel" style="padding:12px;background:#101523">
-          <div style="font-size:13px;font-weight:900">Последние раунды</div>
-          <div class="table-wrap">
-            <table style="min-width:520px">
-              <thead><tr><th>ID</th><th>Игра</th><th>Ставка</th><th>Выплата</th><th>Результат</th></tr></thead>
-              <tbody id="rounds-body"></tbody>
-            </table>
-          </div>
+        <button class=\"btn\" id=\"apply-action-btn\" type=\"button\">Выполнить</button>
+        <div class=\"panel\" style=\"padding:12px;background:#101523\">
+          <div style=\"font-size:13px;font-weight:900\">Последние раунды</div>
+          <div class=\"table-wrap\"><table style=\"min-width:520px\"><thead><tr><th>ID</th><th>Игра</th><th>Ставка</th><th>Выплата</th><th>Результат</th></tr></thead><tbody id=\"rounds-body\"></tbody></table></div>
         </div>
-        <div class="panel" style="padding:12px;background:#101523">
-          <div style="font-size:13px;font-weight:900">Аудит</div>
-          <div class="table-wrap">
-            <table style="min-width:520px">
-              <thead><tr><th>Время</th><th>Действие</th><th>Цель</th><th>Сумма</th></tr></thead>
-              <tbody id="audit-body"></tbody>
-            </table>
-          </div>
+        <div class=\"panel\" style=\"padding:12px;background:#101523\">
+          <div style=\"font-size:13px;font-weight:900\">Аудит</div>
+          <div class=\"table-wrap\"><table style=\"min-width:520px\"><thead><tr><th>Время</th><th>Действие</th><th>Цель</th><th>Сумма</th></tr></thead><tbody id=\"audit-body\"></tbody></table></div>
         </div>
       </div>
     </div>
@@ -205,32 +179,24 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     const $ = (id) => document.getElementById(id);
     const apiUrl = (path) => `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
 
-    function notify(message) {
-      if (tg && typeof tg.showAlert === 'function') tg.showAlert(String(message));
-      else alert(String(message));
-    }
+    function notify(message) { if (tg && typeof tg.showAlert === 'function') tg.showAlert(String(message)); else alert(String(message)); }
 
     async function requestJson(path, payload) {
-      const response = await fetch(apiUrl(path), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      let data = null;
-      try { data = await response.json(); } catch (_) {}
+      const response = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      let data = null; try { data = await response.json(); } catch (_) {}
       if (!response.ok) throw new Error((data && (data.detail || data.message)) ? (data.detail || data.message) : `Ошибка сервера (${response.status})`);
       return data;
     }
 
-    function fmt(n) { return Number(n || 0).toLocaleString('ru-RU'); }
-    function safeText(v) { return String(v ?? ''); }
-    function badge(status, role) {
+    const fmt = (n) => Number(n || 0).toLocaleString('ru-RU');
+    const safeText = (v) => String(v ?? '');
+    const badge = (status, role) => {
       const s = safeText(status).toLowerCase();
       const r = safeText(role).toLowerCase();
       const statusClass = s === 'blocked' ? 'blocked' : 'active';
       const roleClass = r === 'admin' || r === 'owner' ? 'admin' : r === 'moderator' ? 'user' : 'user';
-      return `<span class="tag ${statusClass}">${s || 'active'}</span> <span class="tag ${roleClass}">${r || 'user'}</span>`;
-    }
+      return `<span class=\"tag ${statusClass}\">${s || 'active'}</span> <span class=\"tag ${roleClass}\">${r || 'user'}</span>`;
+    };
 
     function renderSummary() {
       const s = state.summary || {};
@@ -246,44 +212,21 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
       $('users-body').innerHTML = state.users.map((u) => `
         <tr>
           <td>${safeText(u.telegram_id)}</td>
-          <td>
-            <div style="font-weight:900">${safeText(u.name)}</div>
-            <div class="muted">${safeText(u.created_at)}</div>
-          </td>
-          <td><b>${fmt(u.balance)}</b> WC<br><span class="muted">звёзды: ${fmt(u.stars_balance)}</span></td>
+          <td><div style=\"font-weight:900\">${safeText(u.name)}</div><div class=\"muted\">${safeText(u.created_at)}</div></td>
+          <td><b>${fmt(u.balance)}</b> WC<br><span class=\"muted\">звёзды: ${fmt(u.stars_balance)}</span></td>
           <td>${badge(u.status, u.role)}</td>
           <td><b>${safeText(u.role)}</b></td>
-          <td>
-            <div class="actions">
-              <button class="btn secondary" type="button" onclick="prefillUser(${u.telegram_id}, '${safeText(u.role)}', '${safeText(u.status)}')">Выбрать</button>
-              <button class="btn danger" type="button" onclick="quickStatus(${u.telegram_id}, '${safeText(u.status) === 'blocked' ? 'active' : 'blocked'}')">${safeText(u.status) === 'blocked' ? 'Разблок' : 'Блок'}</button>
-            </div>
-          </td>
+          <td><div class=\"actions\"><button class=\"btn secondary\" type=\"button\" onclick=\"prefillUser(${u.telegram_id}, '${safeText(u.role)}', '${safeText(u.status)}')\">Выбрать</button><button class=\"btn danger\" type=\"button\" onclick=\"quickStatus(${u.telegram_id}, '${safeText(u.status) === 'blocked' ? 'active' : 'blocked'}')\">${safeText(u.status) === 'blocked' ? 'Разблок' : 'Блок'}</button></div></td>
         </tr>
       `).join('');
     }
 
     function renderRounds() {
-      $('rounds-body').innerHTML = state.rounds.map((r) => `
-        <tr>
-          <td>#${r.id}</td>
-          <td>${safeText(r.game_type)}</td>
-          <td>${fmt(r.bet)}</td>
-          <td>${fmt(r.payout)}</td>
-          <td>${safeText(r.result)}</td>
-        </tr>
-      `).join('');
+      $('rounds-body').innerHTML = state.rounds.map((r) => `<tr><td>#${r.id}</td><td>${safeText(r.game_type)}</td><td>${fmt(r.bet)}</td><td>${fmt(r.payout)}</td><td>${safeText(r.result)}</td></tr>`).join('');
     }
 
     function renderAudit() {
-      $('audit-body').innerHTML = state.audit.map((a) => `
-        <tr>
-          <td>${safeText(a.created_at)}</td>
-          <td>${safeText(a.action)}</td>
-          <td>${safeText(a.target)}</td>
-          <td>${fmt(a.amount)}</td>
-        </tr>
-      `).join('');
+      $('audit-body').innerHTML = state.audit.map((a) => `<tr><td>${safeText(a.created_at)}</td><td>${safeText(a.action)}</td><td>${safeText(a.target)}</td><td>${fmt(a.amount)}</td></tr>`).join('');
     }
 
     async function loadSummary() {
@@ -292,16 +235,10 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
       state.users = data.users || [];
       state.rounds = data.rounds || [];
       state.audit = data.audit || [];
-      renderSummary();
-      renderUsers();
-      renderRounds();
-      renderAudit();
+      renderSummary(); renderUsers(); renderRounds(); renderAudit();
     }
 
-    async function refreshPanel() {
-      await loadSummary();
-      notify('Панель обновлена');
-    }
+    async function refreshPanel() { await loadSummary(); notify('Панель обновлена'); }
 
     window.prefillUser = function prefillUser(telegramId, role, status) {
       $('action-telegram-id').value = telegramId;
@@ -326,10 +263,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
       if (!telegramId) { notify('Укажи Telegram ID'); return; }
       const payload = { init_data: state.initData, telegram_id: telegramId, action, amount, role, status, note };
       const data = await requestJson('/api/admin/action', payload);
-      state.summary = data.summary;
-      state.users = data.users || state.users;
-      state.rounds = data.rounds || state.rounds;
-      state.audit = data.audit || state.audit;
+      state.summary = data.summary; state.users = data.users || state.users; state.rounds = data.rounds || state.rounds; state.audit = data.audit || state.audit;
       renderSummary(); renderUsers(); renderRounds(); renderAudit();
       notify('Действие выполнено');
     }
@@ -347,12 +281,7 @@ ADMIN_PANEL_HTML = """<!DOCTYPE html>
     async function boot() {
       if (tg && typeof tg.ready === 'function') tg.ready();
       if (tg && typeof tg.expand === 'function') tg.expand();
-      try {
-        await loadSummary();
-      } catch (error) {
-        console.error(error);
-        notify(error.message || 'Нет доступа к админке');
-      }
+      try { await loadSummary(); } catch (error) { console.error(error); notify(error.message || 'Нет доступа к админке'); }
     }
 
     boot();
@@ -534,12 +463,8 @@ def admin_summary(payload: AdminSearchPayload, db: Session = Depends(get_db)) ->
         )
         .all()
     )
-    recent_rounds = (
-        db.execute(select(GameRound).order_by(desc(GameRound.created_at)).limit(10)).scalars().all()
-    )
-    audit_rows = (
-        db.execute(select(AdminAuditLog).order_by(desc(AdminAuditLog.created_at)).limit(10)).scalars().all()
-    )
+    recent_rounds = db.execute(select(GameRound).order_by(desc(GameRound.created_at)).limit(10)).scalars().all()
+    audit_rows = db.execute(select(AdminAuditLog).order_by(desc(AdminAuditLog.created_at)).limit(10)).scalars().all()
     return {
         "summary": {
             "admin_access": True,
