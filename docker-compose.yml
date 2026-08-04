@@ -1,0 +1,39 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PROJECT_NAME: WOG Backend
+      DATABASE_URL: postgresql+psycopg2://wog:wog@postgres:5432/wog
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      CORS_ORIGINS: "*"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: ["python", "bot.py"]
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      BACKEND_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wog
+      POSTGRES_USER: wog
+      POSTGRES_PASSWORD: wog
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
