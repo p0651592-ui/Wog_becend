@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import PlayerStats, Transaction, User, Wallet
 
 
@@ -24,12 +25,15 @@ class WalletService:
     @staticmethod
     def get_or_create_user(session: Session, telegram_id: int, username: str = "", first_name: str = "") -> User:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        is_admin_id = telegram_id in settings.admin_telegram_ids
+        promoted_role = "owner" if is_admin_id and settings.admin_telegram_ids and telegram_id == settings.admin_telegram_ids[0] else ("admin" if is_admin_id else "user")
+
         if user is None:
             user = User(
                 telegram_id=telegram_id,
                 username=username or "",
                 first_name=first_name or "noname",
-                role="user",
+                role=promoted_role,
                 status="active",
             )
             session.add(user)
@@ -50,6 +54,8 @@ class WalletService:
                 user.username = username
             if first_name:
                 user.first_name = first_name
+            if is_admin_id:
+                user.role = promoted_role
         return user
 
     @staticmethod
