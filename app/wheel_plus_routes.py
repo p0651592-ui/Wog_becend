@@ -6,13 +6,15 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, desc, func, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, desc, select
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.db.base import Base
-from app.db.models import PlayerStats, User, Wallet
-from app.main import app, _ensure_user
+from app.db.models import User
+from app.db.session import get_db
+from app.main import _ensure_user, app
 from app.services.stats_service import StatsService
 from app.services.wallet_service import WalletService
 
@@ -61,7 +63,7 @@ class WheelPlusRound(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, onupdate=lambda: datetime.now(timezone.utc)
     )
 
     bets = relationship("WheelPlusBet", back_populates="round", cascade="all, delete-orphan")
@@ -233,7 +235,7 @@ def _current_round_query() -> Any:
     return select(WheelPlusRound).where(WheelPlusRound.room_name == ROOM_NAME).order_by(desc(WheelPlusRound.id))
 
 
-def _get_or_create_active_round(session: Session) -> WheelPlusRound:
+def _ensure_active_round(session: Session) -> WheelPlusRound:
     now = _utcnow()
     current = session.scalar(_current_round_query())
     if current is None:
@@ -242,9 +244,9 @@ def _get_or_create_active_round(session: Session) -> WheelPlusRound:
             status="betting",
             client_seed="wheel-plus-room",
             server_seed=secrets.token_hex(32),
-            betting_close_at=now + timedelta(seconds=BETTING_WINDOW_SECONDS),
             server_seed_hash="",
             nonce=secrets.randbelow(1_000_000),
+            betting_close_at=now + timedelta(seconds=BETTING_WINDOW_SECONDS),
             lucky_numbers_json=json.dumps(_generate_lucky_numbers(), ensure_ascii=False),
         )
         current.server_seed_hash = _hash_seed(current.server_seed)
@@ -255,23 +257,23 @@ def _get_or_create_active_round(session: Session) -> WheelPlusRound:
     if current.status == "betting" and now >= current.betting_close_at:
         _settle_round(session, current)
         session.flush()
-        return _get_or_create_active_round(session)
+        return _ensure_active_round(session)
 
     if current.status == "settled" and current.settled_at and now >= current.settled_at + timedelta(seconds=ROUND_HOLD_SECONDS):
-        current = WheelPlusRound(
+        next_round = WheelPlusRound(
             room_name=ROOM_NAME,
             status="betting",
             client_seed="wheel-plus-room",
             server_seed=secrets.token_hex(32),
-            betting_close_at=now + timedelta(seconds=BETTING_WINDOW_SECONDS),
             server_seed_hash="",
             nonce=secrets.randbelow(1_000_000),
+            betting_close_at=now + timedelta(seconds=BETTING_WINDOW_SECONDS),
             lucky_numbers_json=json.dumps(_generate_lucky_numbers(), ensure_ascii=False),
         )
-        current.server_seed_hash = _hash_seed(current.server_seed)
-        session.add(current)
+        next_round.server_seed_hash = _hash_seed(next_round.server_seed)
+        session.add(next_round)
         session.flush()
-        return current
+        return next_round
 
     return current
 
@@ -286,21 +288,25 @@ def _settle_round(session: Session, round_row: WheelPlusRound) -> WheelPlusRound
 
     totals_by_user: dict[int, dict[str, int]] = {}
     winning_multiplier_by_user: dict[int, int] = {}
-
     total_payout = 0
     total_bet = 0
+
     for bet in bets:
         total_bet += bet.amount
         multiplier = _cell_multiplier(bet.cell_key, result_number)
-        if bet.user_id not in totals_by_user:
-            totals_by_user[bet.user_id] = {"bet": 0, "payout": 0}
-        totals_by_user[bet.user_id]["bet"] += bet.amount
+        user_totals = totals_by_user.setdefault(bet.user_id, {"bet": 0, "payout": 0})
+        user_totals["bet"] += bet.amount
         if multiplier > 0:
             payout = bet.amount * multiplier
             total_payout += payout
-            totals_by_user[bet.user_id]["payout"] += payout
+            user_totals["payout"] += payout
             winning_multiplier_by_user[bet.user_id] = max(winning_multiplier_by_user.get(bet.user_id, 0), multiplier)
-            WalletService.payout(session, bet.user_id, payout, meta={"game": "wheel_plus", "round_id": round_row.id, "cell_key": bet.cell_key, "result": result_number})
+            WalletService.payout(
+                session,
+                bet.user_id,
+                payout,
+                meta={"game": "wheel_plus", "round_id": round_row.id, "cell_key": bet.cell_key, "result": result_number},
+            )
 
     for user_id, totals in totals_by_user.items():
         StatsService.update_after_round(
@@ -360,7 +366,8 @@ def _load_live_players(session: Session, round_id: int) -> list[dict[str, Any]]:
         item["amount"] += bet.amount
         if bet.cell_key not in item["cells"]:
             item["cells"].append(bet.cell_key)
-        item["created_at"] = min(item["created_at"], bet.created_at.isoformat()) if item["created_at"] else bet.created_at.isoformat()
+        if bet.created_at.isoformat() < item["created_at"]:
+            item["created_at"] = bet.created_at.isoformat()
 
     return list(grouped.values())
 
@@ -391,24 +398,20 @@ def _build_room_payload(session: Session, user: User, round_row: WheelPlusRound,
     history = _load_history(session)
     live_players = _load_live_players(session, round_row.id) if round_row.status == "betting" else []
     cell_totals = _load_cell_totals(session, round_row.id) if round_row.status == "betting" else {}
-    seconds_remaining = 0
-    if round_row.status == "betting":
-        seconds_remaining = max(0, int((round_row.betting_close_at - _utcnow()).total_seconds()))
-
-    room = {
-        "name": ROOM_LABEL,
-        "key": ROOM_NAME,
-        "round_id": round_row.id,
-        "status": round_row.status,
-        "seconds_remaining": seconds_remaining,
-        "total_bet": round_row.total_bet,
-        "total_payout": round_row.total_payout,
-        "players_count": len(live_players),
-    }
+    seconds_remaining = max(0, int((round_row.betting_close_at - _utcnow()).total_seconds())) if round_row.status == "betting" else 0
 
     response = {
         "status": "success",
-        "room": room,
+        "room": {
+            "name": ROOM_LABEL,
+            "key": ROOM_NAME,
+            "round_id": round_row.id,
+            "status": round_row.status,
+            "seconds_remaining": seconds_remaining,
+            "total_bet": round_row.total_bet,
+            "total_payout": round_row.total_payout,
+            "players_count": len(live_players),
+        },
         "round": _serialize_round(round_row),
         "balance": snapshot.balance,
         "profile": profile,
@@ -422,40 +425,13 @@ def _build_room_payload(session: Session, user: User, round_row: WheelPlusRound,
 
 
 @app.post("/api/wheel-plus/state")
-def wheel_plus_state(payload: WheelPlusInitPayload, session: Session = None) -> dict[str, Any]:
-    raise RuntimeError("Dependency injection stub")
-
-
-@app.post("/api/wheel-plus/bet")
-def wheel_plus_bet(payload: WheelPlusBetPayload, session: Session = None) -> dict[str, Any]:
-    raise RuntimeError("Dependency injection stub")
-
-
-@app.post("/api/wheel-plus/settle")
-def wheel_plus_settle(payload: WheelPlusInitPayload, session: Session = None) -> dict[str, Any]:
-    raise RuntimeError("Dependency injection stub")
-
-
-@app.post("/api/wheel-plus/round")
-def wheel_plus_round_details(payload: WheelPlusRoundPayload, session: Session = None) -> dict[str, Any]:
-    raise RuntimeError("Dependency injection stub")
-
-
-# ---------------------------------------------------------------------------
-# Route bindings with FastAPI dependency injection
-# ---------------------------------------------------------------------------
-from fastapi import Depends
-from app.db.session import get_db
-
-
-@app.post("/api/wheel-plus/state")
 def wheel_plus_state(payload: WheelPlusInitPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
     user, _ = _ensure_user(db, payload.init_data)
-    round_row = _get_or_create_active_round(db)
+    round_row = _ensure_active_round(db)
     if round_row.status == "betting" and _utcnow() >= round_row.betting_close_at:
         settled_round = _settle_round(db, round_row)
         db.flush()
-        round_row = _get_or_create_active_round(db)
+        round_row = _ensure_active_round(db)
         db.commit()
         return _build_room_payload(db, user, round_row, settled_round=settled_round)
 
@@ -468,13 +444,13 @@ def wheel_plus_bet(payload: WheelPlusBetPayload, db: Session = Depends(get_db)) 
     user, _ = _ensure_user(db, payload.init_data)
     cell_key = _normalize_cell_key(payload.cell_key)
     if cell_key not in SUPPORTED_CELLS:
-        raise ValueError("Unsupported bet cell")
+        raise HTTPException(status_code=400, detail="Unsupported bet cell")
 
-    round_row = _get_or_create_active_round(db)
+    round_row = _ensure_active_round(db)
     if round_row.status != "betting" or _utcnow() >= round_row.betting_close_at:
         settled_round = _settle_round(db, round_row)
         db.flush()
-        round_row = _get_or_create_active_round(db)
+        round_row = _ensure_active_round(db)
         db.commit()
         payload_data = _build_room_payload(db, user, round_row, settled_round=settled_round)
         payload_data["message"] = "Ставки уже закрыты, следующий раунд открыт."
@@ -485,7 +461,7 @@ def wheel_plus_bet(payload: WheelPlusBetPayload, db: Session = Depends(get_db)) 
         user.id,
         payload.amount,
         tx_type="wheel_plus_bet",
-        meta={"room": ROOM_NAME, "round_id": round_row.id, "cell_key": cell_key},
+        meta={"game": "wheel_plus", "room": ROOM_NAME, "round_id": round_row.id, "cell_key": cell_key},
     )
 
     bet_row = db.scalar(
@@ -511,12 +487,16 @@ def wheel_plus_bet(payload: WheelPlusBetPayload, db: Session = Depends(get_db)) 
 @app.post("/api/wheel-plus/settle")
 def wheel_plus_settle(payload: WheelPlusInitPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
     user, _ = _ensure_user(db, payload.init_data)
-    round_row = _get_or_create_active_round(db)
+    round_row = _ensure_active_round(db)
+    now = _utcnow()
+    if round_row.status == "betting" and now < round_row.betting_close_at:
+        raise HTTPException(status_code=409, detail="Betting is still open")
+
     settled_round = round_row
     if round_row.status == "betting":
         settled_round = _settle_round(db, round_row)
     db.flush()
-    next_round = _get_or_create_active_round(db)
+    next_round = _ensure_active_round(db)
     db.commit()
     return _build_room_payload(db, user, next_round, settled_round=settled_round)
 
@@ -526,14 +506,15 @@ def wheel_plus_round_details(payload: WheelPlusRoundPayload, db: Session = Depen
     _ensure_user(db, payload.init_data)
     round_row = db.scalar(select(WheelPlusRound).where(WheelPlusRound.id == payload.round_id))
     if round_row is None:
-        raise ValueError("Round not found")
+        raise HTTPException(status_code=404, detail="Round not found")
+
     bets = db.execute(
         select(WheelPlusBet, User)
         .join(User, User.id == WheelPlusBet.user_id)
         .where(WheelPlusBet.round_id == round_row.id)
         .order_by(desc(WheelPlusBet.amount), desc(WheelPlusBet.created_at))
     ).all()
-    players = _load_live_players(db, round_row.id)
+
     return {
         "status": "success",
         "round": _serialize_round(round_row),
@@ -548,5 +529,5 @@ def wheel_plus_round_details(payload: WheelPlusRoundPayload, db: Session = Depen
             }
             for bet, user in bets
         ],
-        "players": players,
+        "players": _load_live_players(db, round_row.id),
     }
