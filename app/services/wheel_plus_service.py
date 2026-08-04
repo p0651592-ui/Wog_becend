@@ -22,10 +22,10 @@ BETTING_SECONDS = 45
 HISTORY_LIMIT = 12
 
 WHEEL_SEQUENCE = [
-    "0", "28", "9", "26", "30", "11", "7", "20", "32", "17", "5", "22",
-    "34", "15", "3", "24", "36", "13", "1", "00", "27", "10", "25", "29",
-    "12", "8", "19", "31", "18", "6", "21", "33", "16", "4", "23", "35",
-    "14", "2",
+    "0", "32", "15", "19", "4", "21", "2", "25", "17", "34", "6", "27",
+    "13", "36", "11", "30", "8", "23", "10", "5", "24", "16", "33", "1",
+    "20", "14", "31", "9", "22", "18", "29", "7", "28", "12", "35", "3",
+    "26",
 ]
 
 RED_NUMBERS = {"1", "3", "5", "7", "9", "12", "14", "16", "18", "19", "21", "23", "25", "27", "30", "32", "34", "36"}
@@ -57,7 +57,7 @@ def _normalize_cell_key(cell_key: str) -> str:
     key = str(cell_key or "").strip().lower()
     if key in {"dozen1", "dozen2", "dozen3"}:
         return {"dozen1": "doz1", "dozen2": "doz2", "dozen3": "doz3"}[key]
-    if key == "0":
+    if key in {"0", "num0", "00"}:
         return "zero"
     return key
 
@@ -71,7 +71,7 @@ def _cell_label(cell_key: str) -> str:
 
 def _color_of(result: str) -> str:
     value = str(result)
-    if value in {"0", "00"}:
+    if value == "0":
         return "green"
     if value in RED_NUMBERS:
         return "red"
@@ -97,13 +97,10 @@ def _lucky_numbers(server_seed: str, client_seed: str, nonce: int) -> list[dict[
         hashlib.sha256,
     ).hexdigest()
     rng = random.Random(int(digest[:16], 16))
-    pool = [value for value in WHEEL_SEQUENCE if value not in {"0", "00"}]
+    pool = [value for value in WHEEL_SEQUENCE if value != "0"]
     picked = rng.sample(pool, k=min(3, len(pool)))
     multipliers = [50, 100, 300]
-    return [
-        {"number": picked[index], "multiplier": multipliers[index]}
-        for index in range(min(3, len(picked)))
-    ]
+    return [{"number": picked[i], "multiplier": multipliers[i]} for i in range(len(picked))]
 
 
 def _cell_multiplier(cell_key: str, result: str) -> int:
@@ -112,8 +109,9 @@ def _cell_multiplier(cell_key: str, result: str) -> int:
         return 30 if result == key[3:] else 0
     if key == "zero":
         return 30 if result == "0" else 0
+
     if key in {"red", "black", "even", "odd", "low", "high"}:
-        if result in {"0", "00"}:
+        if result == "0":
             return 0
         number = int(result)
         if key == "red" and result in RED_NUMBERS:
@@ -128,8 +126,9 @@ def _cell_multiplier(cell_key: str, result: str) -> int:
             return 2
         if key == "high" and 19 <= number <= 36:
             return 2
+
     if key in {"doz1", "doz2", "doz3"}:
-        if result in {"0", "00"}:
+        if result == "0":
             return 0
         number = int(result)
         if key == "doz1" and 1 <= number <= 12:
@@ -166,14 +165,15 @@ def _current_round(session: Session, room: WheelPlusRoom) -> WheelPlusRound | No
 def _create_round(session: Session, room: WheelPlusRoom, round_index: int | None = None) -> WheelPlusRound:
     index = int(round_index or room.round_index or 1)
     server_seed = secrets.token_hex(32)
-    betting_started_at = _utcnow()
-    betting_ends_at = betting_started_at + timedelta(seconds=BETTING_SECONDS)
+    started_at = _utcnow()
+    ended_at = started_at + timedelta(seconds=BETTING_SECONDS)
+
     round_row = WheelPlusRound(
         room_id=room.id,
         round_index=index,
         status="betting",
-        betting_started_at=betting_started_at,
-        betting_ends_at=betting_ends_at,
+        betting_started_at=started_at,
+        betting_ends_at=ended_at,
         server_seed_hash=_hash_seed(server_seed),
         server_seed=server_seed,
         client_seed=f"{ROOM_KEY}:{index}",
@@ -186,18 +186,20 @@ def _create_round(session: Session, room: WheelPlusRoom, round_index: int | None
     )
     session.add(round_row)
     session.flush()
+
     room.current_round_id = round_row.id
     room.status = "betting"
     room.round_index = index
-    room.betting_started_at = betting_started_at
-    room.betting_ends_at = betting_ends_at
+    room.betting_started_at = started_at
+    room.betting_ends_at = ended_at
     return round_row
 
 
 def _ensure_active_round(session: Session, room: WheelPlusRoom) -> WheelPlusRound:
     round_row = _current_round(session, room)
     if round_row is None or round_row.status != "betting":
-        round_row = _create_round(session, room, round_index=(room.round_index or 0) + 1 if room.current_round_id else 1)
+        next_index = (room.round_index or 0) + 1 if room.current_round_id else 1
+        round_row = _create_round(session, room, round_index=next_index)
     return round_row
 
 
@@ -234,8 +236,6 @@ def _aggregate_round_bets(session: Session, round_id: int) -> tuple[list[dict[st
         player["cells"].append(key)
 
     live_players = sorted(players.values(), key=lambda item: item["amount"], reverse=True)
-    for key in list(cell_totals.keys()):
-        cell_totals[key] = int(cell_totals[key])
     return live_players, dict(cell_totals), total_bet
 
 
@@ -262,17 +262,20 @@ def _round_dict(round_row: WheelPlusRound, *, include_secret: bool = False, play
 
 
 def _recent_history(session: Session, room_id: int) -> list[dict[str, Any]]:
-    rounds = session.execute(
+    rows = session.execute(
         select(WheelPlusRound)
         .where(WheelPlusRound.room_id == room_id)
         .where(WheelPlusRound.status == "settled")
         .order_by(desc(WheelPlusRound.settled_at), desc(WheelPlusRound.id))
         .limit(HISTORY_LIMIT)
     ).scalars().all()
-    history: list[dict[str, Any]] = []
-    for round_row in rounds:
-        history.append(_round_dict(round_row, include_secret=True))
-    return history
+    return [_round_dict(row, include_secret=True) for row in rows]
+
+
+def _serialize_profile(session: Session, user: User) -> dict[str, Any]:
+    profile = StatsService.build_profile_payload(session, user)
+    profile["text"] = StatsService.format_profile_text(profile)
+    return profile
 
 
 def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRound) -> dict[str, Any] | None:
@@ -295,10 +298,9 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
     user_bets: dict[int, int] = defaultdict(int)
     user_payouts: dict[int, int] = defaultdict(int)
     user_max_multipliers: dict[int, int] = defaultdict(int)
-
+    cell_totals: dict[str, int] = defaultdict(int)
     total_bet = 0
     total_payout = 0
-    cell_totals: dict[str, int] = defaultdict(int)
 
     for bet, user in bets:
         key = _normalize_cell_key(bet.cell_key)
@@ -314,7 +316,12 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
             user_max_multipliers[user.id] = max(user_max_multipliers[user.id], multiplier)
 
     for user_id, payout in user_payouts.items():
-        WalletService.payout(session, user_id, payout, meta={"game": "wheel_plus_room", "room_id": room.id, "round_id": round_row.id})
+        WalletService.payout(
+            session,
+            user_id,
+            payout,
+            meta={"game": "wheel_plus_room", "room_id": room.id, "round_id": round_row.id},
+        )
 
     for user_id, bet_amount in user_bets.items():
         StatsService.update_after_round(
@@ -332,15 +339,10 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
     round_row.total_bet = total_bet
     round_row.total_payout = total_payout
     round_row.settled_at = _utcnow()
+    room.status = "settled"
+    room.updated_at = _utcnow()
 
     for user_id, bet_amount in user_bets.items():
-        round_result = {
-            "result_number": result_number,
-            "result_color": result_color,
-            "lucky_numbers": lucky_numbers,
-            "room_id": room.id,
-            "round_id": round_row.id,
-        }
         session.add(
             GameRound(
                 user_id=user_id,
@@ -352,12 +354,19 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
                 server_seed_hash=round_row.server_seed_hash,
                 server_seed=round_row.server_seed,
                 nonce=round_row.nonce,
-                result_json=json.dumps(round_result, ensure_ascii=False),
+                result_json=json.dumps(
+                    {
+                        "result_number": result_number,
+                        "result_color": result_color,
+                        "lucky_numbers": lucky_numbers,
+                        "room_id": room.id,
+                        "round_id": round_row.id,
+                    },
+                    ensure_ascii=False,
+                ),
             )
         )
 
-    room.status = "settled"
-    room.updated_at = _utcnow()
     session.flush()
 
     settled = _round_dict(round_row, include_secret=True)
@@ -368,12 +377,6 @@ def _settle_round(session: Session, room: WheelPlusRoom, round_row: WheelPlusRou
     settled["total_payout"] = total_payout
     settled["players_count"] = len(user_bets)
     return settled
-
-
-def _serialize_profile(session: Session, user: User) -> dict[str, Any]:
-    profile = StatsService.build_profile_payload(session, user)
-    profile["text"] = StatsService.format_profile_text(profile)
-    return profile
 
 
 def build_state(session: Session, user: User, *, settle_if_due: bool = True) -> dict[str, Any]:
@@ -430,9 +433,9 @@ def place_bet(session: Session, user: User, cell_key: str, amount: int) -> dict[
         raise ValueError("amount must be positive")
 
     normalized = _normalize_cell_key(cell_key)
-    if normalized not in CELL_LABELS and not normalized.startswith("num"):
-        if normalized != "zero":
-            raise ValueError("Invalid cell key")
+    valid_cells = {"red", "black", "even", "odd", "low", "high", "doz1", "doz2", "doz3", "zero"}
+    if normalized not in valid_cells and not (normalized.startswith("num") and normalized[3:].isdigit()):
+        raise ValueError("Invalid cell key")
 
     WalletService.place_bet(
         session,
@@ -456,11 +459,9 @@ def place_bet(session: Session, user: User, cell_key: str, amount: int) -> dict[
 def settle_due_round(session: Session, user: User) -> dict[str, Any]:
     room = _room_or_create(session)
     current_round = _ensure_active_round(session, room)
-    settled_round = _settle_round(session, room, current_round)
-    if settled_round:
+    if current_round.status == "betting" and current_round.betting_ends_at <= _utcnow():
+        _settle_round(session, room, current_round)
         room.round_index = (current_round.round_index or 1) + 1
-        current_round = _create_round(session, room, round_index=room.round_index)
-    payload = build_state(session, user, settle_if_due=False)
-    if settled_round:
-        payload["settled_round"] = settled_round
-    return payload
+        _create_round(session, room, round_index=room.round_index)
+        session.flush()
+    return build_state(session, user, settle_if_due=False)
