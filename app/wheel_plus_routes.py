@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, desc, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, desc, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.db.base import Base
@@ -488,8 +488,7 @@ def wheel_plus_bet(payload: WheelPlusBetPayload, db: Session = Depends(get_db)) 
 def wheel_plus_settle(payload: WheelPlusInitPayload, db: Session = Depends(get_db)) -> dict[str, Any]:
     user, _ = _ensure_user(db, payload.init_data)
     round_row = _ensure_active_round(db)
-    now = _utcnow()
-    if round_row.status == "betting" and now < round_row.betting_close_at:
+    if round_row.status == "betting" and _utcnow() < round_row.betting_close_at:
         raise HTTPException(status_code=409, detail="Betting is still open")
 
     settled_round = round_row
