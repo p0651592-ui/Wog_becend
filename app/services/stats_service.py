@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +19,14 @@ class StatsService:
         return stats
 
     @staticmethod
+    def _reset_daily_if_needed(stats: PlayerStats, now: datetime) -> None:
+        if stats.last_game_at is None:
+            return
+        if stats.last_game_at.date() != now.date():
+            stats.today_win = 0
+            stats.today_loss = 0
+
+    @staticmethod
     def update_after_round(
         session: Session,
         user_id: int,
@@ -29,10 +37,14 @@ class StatsService:
         stats = StatsService.get_or_create(session, user_id)
         wallet = session.scalar(select(Wallet).where(Wallet.user_id == user_id))
         user = session.scalar(select(User).where(User.id == user_id))
+        now = datetime.now(timezone.utc)
+
+        StatsService._reset_daily_if_needed(stats, now)
 
         stats.games_count += 1
         stats.total_bet += bet
         stats.total_volume += bet
+        stats.last_game_at = now
 
         if payout > 0:
             stats.total_win += payout
@@ -46,7 +58,7 @@ class StatsService:
         if wallet is not None:
             stats.max_balance = max(stats.max_balance, wallet.balance)
         if user is not None:
-            stats.last_game_at = user.updated_at
+            stats.max_balance = max(stats.max_balance, wallet.balance if wallet is not None else stats.max_balance)
         return stats
 
     @staticmethod
