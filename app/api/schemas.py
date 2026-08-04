@@ -35,3 +35,18 @@ class WheelClassicSpinPayload(BaseModel):
     bet_type: str = Field(default="number")
     number: str = Field(default="")
     client_seed: str = Field(default="")
+
+
+class AdminSearchPayload(BaseModel):
+    init_data: str = Field(default="")
+    query: str = Field(default="")
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class AdminActionPayload(BaseModel):
+    init_data: str = Field(default="")
+    telegram_id: int = Field(gt=0)
+    action: str = Field(default="")
+    amount: int = Field(default=0, ge=0)
+    role: str = Field(default="")
+    status: str = Field(default="")
