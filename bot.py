@@ -1,43 +1,69 @@
-from fastapi import FastAPI, Request
-import requests
+from __future__ import annotations
 
-app = FastAPI()
+import asyncio
+import logging
+import os
 
-# Ваши данные
-TELEGRAM_TOKEN = "8804973603:AAHqWkyFQv8qW2ZZUHn7RSqVddqVCN6_vXs"
-CHAT_ID = "-1004438070296"  # Например, "-100XXXXXXXXXX"
+import aiohttp
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, CommandStart
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
-@app.post("/github-webhook")
-async def github_webhook(request: Request):
-    payload = await request.json()
-    
-    # Проверяем наличие коммитов (событие push)
-    if "commits" in payload:
-        repo_name = payload["repository"]["full_name"]
-        branch = payload["ref"].split("/")[-1]
-        pusher = payload["pusher"]["name"]
-        
-        # Собираем список коммитов
-        commit_text = ""
-        for commit in payload["commits"]:
-            short_id = commit["id"][:7]
-            commit_text += f"\n• [{short_id}] {commit['message']} — {commit['author']['name']}"
-            
-        message = (
-            f"🚀 <b>Новый пуш в репозиторий!</b>\n\n"
-            f"📦 <b>Репозиторий:</b> {repo_name}\n"
-            f"🌿 <b>Ветка:</b> {branch}\n"
-            f"👤 <b>Автор:</b> {pusher}\n"
-            f"💬 <b>Коммиты:</b>{commit_text}"
-        )
-        
-        # Отправка в Telegram
-        url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        })
-        
-    return {"status": "ok"}
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is required")
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+MENU = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="💎 Баланс")],
+        [KeyboardButton(text="🏆 Рейтинг")],
+    ],
+    resize_keyboard=True,
+    selective=True,
+)
+
+
+async def fetch_profile(telegram_id: int) -> dict:
+    url = f"{BACKEND_URL.rstrip('/')}/api/profile/{telegram_id}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=15) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message) -> None:
+    await message.answer(
+        "Добро пожаловать в WOG.\n\nНажми кнопку «👤 Профиль» или используй /bal / /бал.",
+        reply_markup=MENU,
+    )
+
+
+@dp.message(F.text.in_({"👤 Профиль", "/bal", "/бал", "/profile", "💎 Баланс"}))
+async def show_profile(message: Message) -> None:
+    try:
+        profile = await fetch_profile(message.from_user.id)
+        await message.answer(profile.get("text") or "Профиль недоступен.", reply_markup=MENU)
+    except Exception as exc:  # pragma: no cover - bot runtime errors only
+        logging.exception("Failed to load profile: %s", exc)
+        await message.answer("Не удалось загрузить профиль. Попробуй ещё раз позже.", reply_markup=MENU)
+
+
+@dp.message(Command("top"))
+async def show_rating(message: Message) -> None:
+    await message.answer("Рейтинг игроков будет подключён следующим этапом.", reply_markup=MENU)
+
+
+async def main() -> None:
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
