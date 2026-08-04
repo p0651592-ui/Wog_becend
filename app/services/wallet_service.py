@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,7 +56,13 @@ class WalletService:
     def _get_wallet_for_update(session: Session, user_id: int) -> Wallet:
         wallet = session.scalar(select(Wallet).where(Wallet.user_id == user_id).with_for_update())
         if wallet is None:
-            wallet = Wallet(user_id=user_id, balance=0, stars_balance=WalletService.STARTING_STARS, locked_balance=0, max_balance=0)
+            wallet = Wallet(
+                user_id=user_id,
+                balance=0,
+                stars_balance=WalletService.STARTING_STARS,
+                locked_balance=0,
+                max_balance=0,
+            )
             session.add(wallet)
             session.flush()
         return wallet
@@ -77,7 +84,7 @@ class WalletService:
                 amount=amount,
                 balance_before=balance_before,
                 balance_after=balance_after,
-                meta_json=(meta and __import__("json").dumps(meta, ensure_ascii=False)) or "{}",
+                meta_json=json.dumps(meta or {}, ensure_ascii=False),
             )
         )
 
