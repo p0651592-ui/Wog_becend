@@ -37,11 +37,8 @@ def wheel_plus_reveal(payload: WheelPlusRevealPayload, db: Session = Depends(get
             raise HTTPException(status_code=404, detail="Room not found")
         if round_row.betting_ends_at > wpa._utcnow():
             raise HTTPException(status_code=409, detail="Round is not settled yet")
-        settled = _settle_round(db, room, round_row)
+        _settle_round(db, room, round_row)
         db.commit()
-        round_row = db.get(wpa.WheelPlusRound, settled["id"]) if isinstance(settled, dict) else round_row
-        if round_row is None:
-            round_row = db.get(wpa.WheelPlusRound, payload.round_id)
 
     return {
         "round": _serialize_round(round_row),
