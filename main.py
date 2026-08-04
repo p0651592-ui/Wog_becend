@@ -1,4 +1,5 @@
-from app.main import app
+from app.main import app  # noqa: F401
+from app import wheel_plus_routes  # noqa: F401
 
 
 if __name__ == "__main__":
