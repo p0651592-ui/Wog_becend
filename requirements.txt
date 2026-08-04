@@ -4,3 +4,5 @@ pydantic
 sqlalchemy
 requests
 psycopg2-binary
+aiohttp
+aiogram
