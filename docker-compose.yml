@@ -8,6 +8,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://wog:wog@postgres:5432/wog
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      ADMIN_TELEGRAM_IDS: ${ADMIN_TELEGRAM_IDS}
       CORS_ORIGINS: "*"
     depends_on:
       - postgres
