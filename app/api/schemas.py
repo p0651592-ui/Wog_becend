@@ -50,3 +50,20 @@ class AdminActionPayload(BaseModel):
     amount: int = Field(default=0, ge=0)
     role: str = Field(default="")
     status: str = Field(default="")
+    note: str = Field(default="")
+
+
+class WheelPlusRoomViewPayload(BaseModel):
+    init_data: str = Field(default="")
+
+
+class WheelPlusBetPayload(BaseModel):
+    init_data: str = Field(default="")
+    cell_key: str = Field(default="")
+    amount: int = Field(gt=0)
+    client_seed: str = Field(default="")
+
+
+class WheelPlusRevealPayload(BaseModel):
+    init_data: str = Field(default="")
+    round_id: int = Field(gt=0)
