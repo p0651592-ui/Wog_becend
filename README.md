@@ -11,7 +11,7 @@ WOG backend with Telegram Mini App auth, wallet, profile statistics, Wheel Class
 - Player profile formatting for `/bal` and `/бал`
 - Server-side Wheel Classic roulette spin with payouts and round history
 - Telegram bot with profile button and commands
-- Admin panel at `/admin` for dashboard, search, roles, block/unblock, and bonuses
+- Admin panel at `/admin` for dashboard, search, roles, block/unblock, and balance actions
 - Dockerfile and docker-compose stack
 
 ## Main endpoints
@@ -25,16 +25,17 @@ WOG backend with Telegram Mini App auth, wallet, profile statistics, Wheel Class
 - `POST /api/wheel/payout`
 - `POST /api/wheel-classic/spin`
 - `POST /api/games/round/finish`
-- `POST /api/admin/dashboard`
-- `POST /api/admin/users/search`
-- `POST /api/admin/user/action`
+- `POST /api/admin/summary`
+- `POST /api/admin/users`
+- `POST /api/admin/rounds`
 - `POST /api/admin/audit`
+- `POST /api/admin/action`
 
 ## Local run
 
 ```bash
 pip install -r requirements.txt
-uvicorn app.admin_main:app --reload
+uvicorn app.main:app --reload
 ```
 
 ## Docker run
