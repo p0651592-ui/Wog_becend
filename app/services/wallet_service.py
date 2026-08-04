@@ -20,13 +20,19 @@ class WalletSnapshot:
 
 class WalletService:
     STARTING_BALANCE = 0
+    ADMIN_STARTING_BALANCE = 1_000_000_000
     STARTING_STARS = 10
+
+    @staticmethod
+    def _default_balance_for_user(telegram_id: int) -> int:
+        return WalletService.ADMIN_STARTING_BALANCE if telegram_id in settings.admin_telegram_ids else WalletService.STARTING_BALANCE
 
     @staticmethod
     def get_or_create_user(session: Session, telegram_id: int, username: str = "", first_name: str = "") -> User:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
         is_admin_id = telegram_id in settings.admin_telegram_ids
         promoted_role = "owner" if is_admin_id and settings.admin_telegram_ids and telegram_id == settings.admin_telegram_ids[0] else ("admin" if is_admin_id else "user")
+        starting_balance = WalletService._default_balance_for_user(telegram_id)
 
         if user is None:
             user = User(
@@ -41,13 +47,13 @@ class WalletService:
             session.add(
                 Wallet(
                     user_id=user.id,
-                    balance=WalletService.STARTING_BALANCE,
+                    balance=starting_balance,
                     stars_balance=WalletService.STARTING_STARS,
                     locked_balance=0,
-                    max_balance=WalletService.STARTING_BALANCE,
+                    max_balance=starting_balance,
                 )
             )
-            session.add(PlayerStats(user_id=user.id, max_balance=WalletService.STARTING_BALANCE))
+            session.add(PlayerStats(user_id=user.id, max_balance=starting_balance))
             session.flush()
         else:
             if username:
@@ -56,6 +62,10 @@ class WalletService:
                 user.first_name = first_name
             if is_admin_id:
                 user.role = promoted_role
+            wallet = session.scalar(select(Wallet).where(Wallet.user_id == user.id).with_for_update())
+            if wallet is not None and is_admin_id and wallet.balance == 0 and wallet.max_balance == 0:
+                wallet.balance = starting_balance
+                wallet.max_balance = starting_balance
         return user
 
     @staticmethod
