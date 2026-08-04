@@ -27,3 +27,11 @@ class GameRoundPayload(BaseModel):
     server_seed: str = Field(default="")
     nonce: int = Field(default=0, ge=0)
     result_json: dict = Field(default_factory=dict)
+
+
+class WheelClassicSpinPayload(BaseModel):
+    init_data: str = Field(default="")
+    bet: int = Field(gt=0)
+    bet_type: str = Field(default="number")
+    number: str = Field(default="")
+    client_seed: str = Field(default="")
