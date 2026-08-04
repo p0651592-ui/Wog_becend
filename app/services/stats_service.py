@@ -41,24 +41,26 @@ class StatsService:
 
         StatsService._reset_daily_if_needed(stats, now)
 
+        bet = max(0, int(bet or 0))
+        payout = max(0, int(payout or 0))
+        loss = max(0, bet - payout)
+
         stats.games_count += 1
         stats.total_bet += bet
         stats.total_volume += bet
+        stats.total_win += payout
+        stats.total_loss += loss
+        stats.today_win += payout
+        stats.today_loss += loss
         stats.last_game_at = now
 
-        if payout > 0:
-            stats.total_win += payout
-            stats.today_win += payout
-            stats.max_win = max(stats.max_win, payout)
-        else:
-            stats.total_loss += bet
-            stats.today_loss += bet
-
         stats.max_multiplier = max(stats.max_multiplier, multiplier)
+        if payout > 0:
+            stats.max_win = max(stats.max_win, payout)
         if wallet is not None:
             stats.max_balance = max(stats.max_balance, wallet.balance)
-        if user is not None:
-            stats.max_balance = max(stats.max_balance, wallet.balance if wallet is not None else stats.max_balance)
+        if user is not None and wallet is not None:
+            stats.max_balance = max(stats.max_balance, wallet.balance)
         return stats
 
     @staticmethod
